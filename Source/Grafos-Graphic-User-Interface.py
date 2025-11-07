@@ -5214,10 +5214,30 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Grafos GUI")
     app.setOrganizationName("GraphGUI")
-    
+
+    # Intentar cargar un icono llamado 'Grafos.ico' situado junto al script
+    try:
+        icon_path = Path(__file__).with_name('Grafos.ico')
+        if not icon_path.exists():
+            # intentar también en el directorio de trabajo
+            icon_path = Path.cwd() / 'Grafos.ico'
+        if icon_path.exists():
+            app_icon = QIcon(str(icon_path))
+            app.setWindowIcon(app_icon)
+    except Exception:
+        # no bloquear la ejecución por problemas con el icono
+        pass
+
     window = MainWindow()
+    # establecer también el icono en la ventana principal si fue cargado
+    try:
+        if 'app_icon' in locals():
+            window.setWindowIcon(app_icon)
+    except Exception:
+        pass
+
     window.show()
-    
+
     sys.exit(app.exec_())
 
 
