@@ -1,7 +1,6 @@
 import sys
 import json
 import uuid
-import heapq
 import itertools
 import math
 from typing import Dict, List, Tuple, Optional, Set
@@ -1198,6 +1197,7 @@ class GraphCanvas(QWidget):
             if self.mode == 'select':
                 if node_id:
                     # Selección de nodo (multi con Ctrl)
+                    # Si no está seleccionado y no hay Ctrl, limpiar selecciones previas
                     if not (event.modifiers() & Qt.ControlModifier):
                         if node_id not in self.selected_nodes:
                             self.selected_nodes.clear()
@@ -1205,12 +1205,18 @@ class GraphCanvas(QWidget):
                     if event.modifiers() & Qt.ControlModifier and node_id in self.selected_nodes:
                         self.selected_nodes.discard(node_id)
                     else:
+                        # Si el nodo no estaba seleccionado, añadirlo (permitir arrastrar único)
                         self.selected_nodes.add(node_id)
+
+                    # Iniciar arrastre del nodo (o del grupo seleccionado)
                     self.dragging_node = node_id
                     self.drag_start = QPointF(pos)
                     self.dragging_initiated = False
                     # Preparar posiciones originales para arrastre grupal
+                    # Aseguramos que al menos el nodo clicado está en el diccionario
                     self.group_drag_orig_positions = {nid: tuple(self.nodes[nid].pos) for nid in self.selected_nodes}
+                    # Cambiar cursor para indicar arrastre
+                    self.setCursor(Qt.ClosedHandCursor)
                     # Pausar animación si está corriendo para evitar conflicto de posiciones
                     try:
                         if getattr(self, 'animation_controller', None) and self.animation_controller.is_running():
@@ -1270,7 +1276,16 @@ class GraphCanvas(QWidget):
         if self.dragging_node and self.drag_start:
             dist = (pos - self.drag_start).manhattanLength()
             if not self.dragging_initiated and dist >= self.drag_threshold:
+                # Marcar inicio de arrastre y guardar el estado PREVIO para permitir "undo" del movimiento
                 self.dragging_initiated = True
+                try:
+                    parent = self.parent()
+                    if parent and hasattr(parent, 'save_state'):
+                        parent.save_state()
+                except Exception:
+                    pass
+                # asegurar cursor de arrastre
+                self.setCursor(Qt.ClosedHandCursor)
             if self.dragging_initiated:
                 delta_screen = pos - self.drag_start
                 delta_world = QPointF(delta_screen.x() / self.zoom, delta_screen.y() / self.zoom)
@@ -1289,6 +1304,13 @@ class GraphCanvas(QWidget):
                     self.nodes[nid].pos = new_pos
                 self.update()
         
+        # Si no estamos arrastrando pero estamos sobre un nodo, mostrar cursor de mano
+        elif not self.panning:
+            if self.hovered_node:
+                self.setCursor(Qt.OpenHandCursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+
         # Panning
         elif self.panning and self.pan_start:
             delta = pos - self.pan_start
@@ -1318,6 +1340,8 @@ class GraphCanvas(QWidget):
             self.drag_start = None
             self.dragging_initiated = False
             self.group_drag_orig_positions.clear()
+            # Restaurar cursor
+            self.setCursor(Qt.ArrowCursor)
             # Guardar estado si hubo movimiento (usar parent MainWindow)
             if moved:
                 parent = self.parent()
@@ -1597,6 +1621,97 @@ class MainWindow(QMainWindow):
 
         # Global shortcuts (additional)
         self.register_shortcuts()
+
+    # ------------------------------------------------------------------
+    # Animation / Mode controls
+    # ------------------------------------------------------------------
+    def toggle_animation(self):
+        """Toggle between start and pause for the animation controller"""
+        try:
+            ac = self.canvas.animation_controller
+            if ac.is_running():
+                ac.pause()
+                self.play_pause_action.setChecked(False)
+                # cambiar icono a Play
+                try:
+                    self.play_pause_action.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+                except Exception:
+                    pass
+                self.log("Animación pausada")
+            else:
+                ac.start()
+                self.play_pause_action.setChecked(True)
+                try:
+                    self.play_pause_action.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+                except Exception:
+                    pass
+                self.log("Animación iniciada")
+        except Exception:
+            self.log("Control de animación no disponible")
+
+    def stop_animation(self):
+        """Stop the animation and clear highlights"""
+        try:
+            ac = self.canvas.animation_controller
+            ac.stop()
+            # uncheck play button
+            try:
+                self.play_pause_action.setChecked(False)
+            except Exception:
+                pass
+            # limpiar resaltados
+            self.canvas.clear_highlights()
+            self.log("Animación detenida")
+        except Exception:
+            self.log("No se pudo detener la animación")
+
+    def cancel_mode(self):
+        """Cancel any active edit/connection mode and return to select mode"""
+        try:
+            # Use set_mode to ensure UI/state updated
+            self.set_mode('select')
+            # Uncheck toolbar toggles if present
+            try:
+                self.select_action.setChecked(True)
+                self.connect_action.setChecked(False)
+            except Exception:
+                pass
+            self.log("Modo cancelado: volver a Seleccionar")
+            self.canvas.update()
+        except Exception:
+            self.log("No se pudo cancelar el modo")
+
+    def show_algorithm_summary(self, name: str, success: bool, brief: str, details: str = None):
+        """Show a summary alert after running an algorithm.
+
+        - name: algorithm name
+        - success: True if completed OK, False if error/partial
+        - brief: short one-line summary
+        - details: longer text with steps, path or error message
+        """
+        try:
+            if success:
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Information)
+                msg.setWindowTitle(f"{name} - Completado")
+                msg.setText(brief)
+                if details:
+                    msg.setDetailedText(details)
+                msg.exec_()
+            else:
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Warning)
+                msg.setWindowTitle(f"{name} - Error / Incompleto")
+                msg.setText(brief)
+                if details:
+                    msg.setDetailedText(details)
+                msg.exec_()
+        except Exception:
+            # Fallback simple message
+            if success:
+                QMessageBox.information(self, f"{name}", brief)
+            else:
+                QMessageBox.warning(self, f"{name}", brief)
 
         # Save initial state
         self.save_state()
@@ -2042,12 +2157,28 @@ class MainWindow(QMainWindow):
         redo_btn.triggered.connect(self.redo)
         toolbar.addAction(undo_btn)
         toolbar.addAction(redo_btn)
+        # Control de animación: iniciar/pausar y detener
+        play_icon = self.style().standardIcon(QStyle.SP_MediaPlay)
+        pause_icon = self.style().standardIcon(QStyle.SP_MediaPause)
+        stop_icon = self.style().standardIcon(QStyle.SP_MediaStop)
+        self.play_pause_action = QAction(play_icon, "Iniciar/Pausar animación", self)
+        self.play_pause_action.setCheckable(True)
+        self.play_pause_action.triggered.connect(self.toggle_animation)
+        stop_action = QAction(stop_icon, "Detener animación", self)
+        stop_action.triggered.connect(self.stop_animation)
+        toolbar.addAction(self.play_pause_action)
+        toolbar.addAction(stop_action)
         # referencias para controlar enabled
         self.undo_toolbar_action = undo_btn
         self.redo_toolbar_action = redo_btn
         # Inicializa estado
         if hasattr(self, 'update_undo_redo_actions'):
             self.update_undo_redo_actions()
+
+        # Botón para cancelar modo activo (connect/añadir)
+        cancel_mode_act = QAction("Cancelar modo", self)
+        cancel_mode_act.triggered.connect(self.cancel_mode)
+        toolbar.addAction(cancel_mode_act)
 
     def _on_mode_click(self, mode: str):
         """Gestiona selección visual de modo, permitiendo estado 'ninguno' al inicio."""
@@ -3209,7 +3340,7 @@ class MainWindow(QMainWindow):
         if not self.canvas.nodes:
             QMessageBox.warning(self, "Grafo vacío", "No hay nodos en el grafo.")
             return
-        
+
         # Get start node
         node_labels = [n.label for n in self.canvas.nodes.values()]
         start_label, ok = QInputDialog.getItem(
@@ -3220,64 +3351,162 @@ class MainWindow(QMainWindow):
             0,
             False
         )
-        
+
         if not ok:
             return
-        
+
         # Find node by label
-        start_id = None
-        for nid, node in self.canvas.nodes.items():
-            if node.label == start_label:
-                start_id = nid
-                break
-        
-        if not start_id:
+        start_id = next((nid for nid, node in self.canvas.nodes.items() if node.label == start_label), None)
+        if start_id is None:
+            QMessageBox.warning(self, "Nodo no encontrado", "No se pudo localizar el nodo inicial seleccionado.")
             return
-        
-        # Run BFS
-        visited = set()
-        queue = deque([start_id])
-        visited.add(start_id)
-        order = []
-        edges_used = []
-        # Pasos para animación
-        steps = []
-        
-        while queue:
-            current = queue.popleft()
-            order.append(self.canvas.nodes[current].label)
-            steps.append({'nodes': list(visited), 'edges': list(edges_used)})
-            
-            # Find neighbors
-            for edge in self.canvas.edges.values():
-                neighbor = None
-                if edge.source == current and edge.target not in visited:
-                    neighbor = edge.target
-                    edges_used.append(edge.id)
-                elif not edge.directed and edge.target == current and edge.source not in visited:
-                    neighbor = edge.source
-                    edges_used.append(edge.id)
-                
-                if neighbor:
-                    visited.add(neighbor)
-                    queue.append(neighbor)
-                    steps.append({'nodes': list(visited), 'edges': list(edges_used)})
-        
-        # Animar o resaltar final
-        if getattr(self, 'animate_algorithms', False) and steps:
-            self.canvas.animation_controller.set_steps(steps)
-            # Ajustar velocidad desde preferencias si existe
-            try:
-                speed = int(self.settings.value('anim_speed_ms', 1000))
-                self.canvas.animation_controller.set_speed(speed)
-            except Exception:
-                pass
-            self.canvas.animation_controller.start()
+
+        # Preguntar si se desea buscar un camino objetivo o hacer recorrido completo
+        choice = QMessageBox.question(self, "BFS", "¿Desea buscar un camino hasta un nodo objetivo?",
+                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if choice == QMessageBox.Yes:
+            # Pedir nodo final
+            end_label, ok = QInputDialog.getItem(
+                self,
+                "BFS - Camino",
+                "Seleccione el nodo final:",
+                node_labels,
+                0,
+                False
+            )
+            if not ok:
+                return
+
+            end_id = next((nid for nid, n in self.canvas.nodes.items() if n.label == end_label), None)
+            if end_id is None:
+                QMessageBox.warning(self, "Nodo no encontrado", "No se pudo localizar el nodo final seleccionado.")
+                return
+
+            if end_id == start_id:
+                QMessageBox.information(self, "BFS", "Nodo inicial y final son el mismo.")
+                self.canvas.highlight_nodes([start_id])
+                self.log(f"BFS: inicio y fin iguales ({start_label})")
+                self.show_algorithm_summary('BFS', True, "BFS completado", f"Inicio y fin son {start_label}")
+                return
+
+            # BFS para encontrar camino más corto (en grafo no ponderado)
+            visited = set([start_id])
+            parent = {start_id: None}
+            parent_edge = {}
+            queue = deque([start_id])
+            steps = []
+            found = False
+
+            # estado inicial
+            steps.append({'nodes': [start_id], 'edges': []})
+
+            while queue and not found:
+                current = queue.popleft()
+                # recorrer aristas para vecinos
+                for edge in self.canvas.edges.values():
+                    neighbor = None
+                    if edge.source == current:
+                        neighbor = edge.target
+                    elif not edge.directed and edge.target == current:
+                        neighbor = edge.source
+
+                    if neighbor is not None and neighbor not in visited:
+                        visited.add(neighbor)
+                        parent[neighbor] = current
+                        parent_edge[neighbor] = edge.id
+                        queue.append(neighbor)
+                        # agregar paso intermedio
+                        steps.append({'nodes': list(visited), 'edges': list(parent_edge.values())})
+                        if neighbor == end_id:
+                            found = True
+                            break
+
+            if not found:
+                QMessageBox.warning(self, "Sin camino", f"No existe un camino entre {start_label} y {end_label}.")
+                self.show_algorithm_summary('BFS', False, "BFS finalizado", f"No existe camino entre {start_label} y {end_label}.")
+                return
+
+            # reconstruir camino
+            path = []
+            path_edges = []
+            cur = end_id
+            while cur is not None:
+                path.append(cur)
+                if cur in parent_edge:
+                    path_edges.append(parent_edge[cur])
+                cur = parent.get(cur)
+            path = list(reversed(path))
+            path_edges = list(reversed(path_edges))
+
+            # animar o resaltar camino encontrado
+            if getattr(self, 'animate_algorithms', False) and steps:
+                # añadir paso final con camino
+                steps.append({'nodes': path, 'edges': path_edges})
+                self.canvas.animation_controller.set_steps(steps)
+                try:
+                    speed = int(self.settings.value('anim_speed_ms', 1000))
+                    self.canvas.animation_controller.set_speed(speed)
+                except Exception:
+                    pass
+                self.canvas.animation_controller.start()
+            else:
+                self.canvas.highlight_nodes(path)
+                self.canvas.highlight_edges(path_edges)
+
+            path_labels = [self.canvas.nodes[nid].label for nid in path]
+            txt = f"BFS camino: {' → '.join(path_labels)}"
+            self.log(txt)
+            summary = f"BFS completado. Camino de {start_label} a {end_label}"
+            details = txt
+            self.show_algorithm_summary('BFS', True, summary, details)
+
         else:
-            self.canvas.highlight_nodes(list(visited))
-            self.canvas.highlight_edges(edges_used)
-        
-        self.log(f"BFS desde {start_label}: {' → '.join(order)}")
+            # Recorrido completo (BFS clásico)
+            visited = set()
+            queue = deque([start_id])
+            visited.add(start_id)
+            order = []
+            edges_used = []
+            steps = []
+
+            while queue:
+                current = queue.popleft()
+                order.append(self.canvas.nodes[current].label)
+                steps.append({'nodes': list(visited), 'edges': list(edges_used)})
+
+                # Find neighbors
+                for edge in self.canvas.edges.values():
+                    neighbor = None
+                    if edge.source == current and edge.target not in visited:
+                        neighbor = edge.target
+                        edges_used.append(edge.id)
+                    elif not edge.directed and edge.target == current and edge.source not in visited:
+                        neighbor = edge.source
+                        edges_used.append(edge.id)
+
+                    if neighbor:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+                        steps.append({'nodes': list(visited), 'edges': list(edges_used)})
+
+            # Animar o resaltar final
+            if getattr(self, 'animate_algorithms', False) and steps:
+                self.canvas.animation_controller.set_steps(steps)
+                try:
+                    speed = int(self.settings.value('anim_speed_ms', 1000))
+                    self.canvas.animation_controller.set_speed(speed)
+                except Exception:
+                    pass
+                self.canvas.animation_controller.start()
+            else:
+                self.canvas.highlight_nodes(list(visited))
+                self.canvas.highlight_edges(edges_used)
+
+            summary = f"BFS completado. Nodos visitados: {len(visited)}"
+            details = 'Orden: ' + ' → '.join(order)
+            self.log(f"BFS desde {start_label}: {' → '.join(order)}")
+            self.show_algorithm_summary('BFS', True, summary, details)
     
     def run_dfs(self):
         """Run DFS algorithm"""
@@ -3306,7 +3535,7 @@ class MainWindow(QMainWindow):
                 start_id = nid
                 break
         
-        if not start_id:
+        if start_id is None:
             return
         
         # Run DFS
@@ -3336,7 +3565,10 @@ class MainWindow(QMainWindow):
         self.canvas.highlight_nodes(list(visited))
         self.canvas.highlight_edges(edges_used)
         
+        summary = f"DFS completado. Nodos visitados: {len(visited)}"
+        details = 'Orden: ' + ' → '.join(order)
         self.log(f"DFS desde {start_label}: {' → '.join(order)}")
+        self.show_algorithm_summary('DFS', True, summary, details)
     
     def run_dijkstra(self):
         """Run Dijkstra's algorithm"""
@@ -3388,7 +3620,7 @@ class MainWindow(QMainWindow):
             if node.label == end_label:
                 end_id = nid
         
-        if not start_id or not end_id:
+        if start_id is None or end_id is None:
             return
         
         # Build NetworkX graph
@@ -3449,7 +3681,11 @@ class MainWindow(QMainWindow):
                 self.canvas.animation_controller.set_steps(steps)
                 self.canvas.animation_controller.start()
                 path_labels = [self.canvas.nodes[nid].label for nid in path]
-                self.log(f"Dijkstra animado: {' → '.join(path_labels)} (distancia: {dist[end_id]:.1f})")
+                logtxt = f"Dijkstra animado: {' → '.join(path_labels)} (distancia: {dist[end_id]:.1f})"
+                self.log(logtxt)
+                summary = f"Dijkstra completado (animado). Camino de {start_label} a {end_label}"
+                details = 'Camino: ' + ' → '.join(path_labels) + f"\nDistancia: {dist[end_id]:.1f}"
+                self.show_algorithm_summary('Dijkstra', True, summary, details)
             else:
                 path = nx.shortest_path(G, start_id, end_id, weight='weight')
                 distance = nx.shortest_path_length(G, start_id, end_id, weight='weight')
@@ -3464,7 +3700,11 @@ class MainWindow(QMainWindow):
                 self.canvas.highlight_nodes(path)
                 self.canvas.highlight_edges(edges_in_path)
                 path_labels = [self.canvas.nodes[nid].label for nid in path]
-                self.log(f"Dijkstra: {' → '.join(path_labels)} (distancia: {distance:.1f})")
+                logtxt = f"Dijkstra: {' → '.join(path_labels)} (distancia: {distance:.1f})"
+                self.log(logtxt)
+                summary = f"Dijkstra completado. Camino de {start_label} a {end_label}"
+                details = 'Camino: ' + ' → '.join(path_labels) + f"\nDistancia: {distance:.1f}"
+                self.show_algorithm_summary('Dijkstra', True, summary, details)
         
         except nx.NetworkXNoPath:
             QMessageBox.warning(
@@ -3517,7 +3757,11 @@ class MainWindow(QMainWindow):
             self.canvas.highlight_nodes(list(mst.nodes()))
             self.canvas.highlight_edges(mst_edges)
             
-            self.log(f"Kruskal: MST con {len(mst_edges)} aristas (peso total: {total_weight:.1f})")
+            txt = f"Kruskal: MST con {len(mst_edges)} aristas (peso total: {total_weight:.1f})"
+            self.log(txt)
+            summary = "Kruskal completado. MST calculado"
+            details = txt
+            self.show_algorithm_summary('Kruskal', True, summary, details)
         
         except Exception as e:
             QMessageBox.warning(
@@ -3554,7 +3798,7 @@ class MainWindow(QMainWindow):
         start_id = next((nid for nid, n in self.canvas.nodes.items() if n.label == start_label), None)
         end_id = next((nid for nid, n in self.canvas.nodes.items() if n.label == end_label), None)
         
-        if not start_id or not end_id:
+        if start_id is None or end_id is None:
             return
         
         G = nx.Graph()
@@ -3579,7 +3823,11 @@ class MainWindow(QMainWindow):
             self.canvas.highlight_edges(edges_in_path)
             
             path_labels = [self.canvas.nodes[nid].label for nid in path]
-            self.log(f"Bellman-Ford: {' → '.join(path_labels)} (distancia: {distance:.1f})")
+            txt = f"Bellman-Ford: {' → '.join(path_labels)} (distancia: {distance:.1f})"
+            self.log(txt)
+            summary = f"Bellman-Ford completado. Camino de {start_label} a {end_label}"
+            details = txt
+            self.show_algorithm_summary('Bellman-Ford', True, summary, details)
         
         except nx.NetworkXNoPath:
             QMessageBox.warning(self, "Sin camino", 
@@ -3633,8 +3881,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(close_btn)
         
         dialog.exec_()
-        self.log("Floyd-Warshall: Calculadas distancias entre todos los pares")
-    
+        txt = "Floyd-Warshall: Calculadas distancias entre todos los pares"
+        self.log(txt)
+        summary = "Floyd-Warshall completado"
+        details = txt
+        self.show_algorithm_summary('Floyd-Warshall', True, summary, details)
+        
     def run_astar(self):
         """Run A* algorithm with Euclidean heuristic"""
         if not HAS_NETWORKX:
@@ -3662,7 +3914,7 @@ class MainWindow(QMainWindow):
         start_id = next((nid for nid, n in self.canvas.nodes.items() if n.label == start_label), None)
         end_id = next((nid for nid, n in self.canvas.nodes.items() if n.label == end_label), None)
         
-        if not start_id or not end_id:
+        if start_id is None or end_id is None:
             return
         
         # Euclidean heuristic
@@ -3693,7 +3945,11 @@ class MainWindow(QMainWindow):
             self.canvas.highlight_edges(edges_in_path)
             
             path_labels = [self.canvas.nodes[nid].label for nid in path]
-            self.log(f"A*: {' → '.join(path_labels)} (distancia: {distance:.1f})")
+            txt = f"A*: {' → '.join(path_labels)} (distancia: {distance:.1f})"
+            self.log(txt)
+            summary = f"A* completado. Camino de {start_label} a {end_label}"
+            details = txt
+            self.show_algorithm_summary('A*', True, summary, details)
         
         except nx.NetworkXNoPath:
             QMessageBox.warning(self, "Sin camino", 
@@ -3733,7 +3989,11 @@ class MainWindow(QMainWindow):
             self.canvas.highlight_nodes(list(mst.nodes()))
             self.canvas.highlight_edges(mst_edges)
             
-            self.log(f"Prim: MST con {len(mst_edges)} aristas (peso total: {total_weight:.1f})")
+            txt = f"Prim: MST con {len(mst_edges)} aristas (peso total: {total_weight:.1f})"
+            self.log(txt)
+            summary = "Prim completado. MST calculado"
+            details = txt
+            self.show_algorithm_summary('Prim', True, summary, details)
         
         except Exception as e:
             QMessageBox.warning(self, "Error", f"No se pudo calcular el MST:\n{str(e)}")
@@ -3768,7 +4028,11 @@ class MainWindow(QMainWindow):
             labels = [self.canvas.nodes[nid].label for nid in topo_order]
             
             self.canvas.highlight_nodes(topo_order)
-            self.log(f"Ordenamiento Topológico: {' → '.join(labels)}")
+            txt = f"Ordenamiento Topológico: {' → '.join(labels)}"
+            self.log(txt)
+            summary = "Ordenamiento topológico completado"
+            details = txt
+            self.show_algorithm_summary('Topológico', True, summary, details)
         
         except nx.NetworkXError:
             QMessageBox.warning(self, "Ciclo detectado", 
@@ -3800,7 +4064,11 @@ class MainWindow(QMainWindow):
             result += f"Componente {i}: {', '.join(labels)}\n"
         
         QMessageBox.information(self, "Tarjan SCC", result)
-        self.log(f"Tarjan: {len(sccs)} componentes fuertemente conexas")
+        txt = f"Tarjan: {len(sccs)} componentes fuertemente conexas"
+        self.log(txt)
+        summary = "Tarjan completado"
+        details = txt
+        self.show_algorithm_summary('Tarjan SCC', True, summary, details)
 
     def run_max_flow(self):
         """Máximo flujo (Edmonds-Karp) y corte mínimo"""
@@ -3857,7 +4125,11 @@ class MainWindow(QMainWindow):
                     edges_cut.append(eid)
             self.canvas.highlight_edges(list(set(edges_flow + edges_cut)))
             self.canvas.highlight_nodes(list(S | T))
-            self.log(f"Máximo flujo de {s_label} a {t_label}: {flow_value:.1f} | Corte mínimo: {cut_value:.1f}")
+            txt = f"Máximo flujo de {s_label} a {t_label}: {flow_value:.1f} | Corte mínimo: {cut_value:.1f}"
+            self.log(txt)
+            summary = "Máximo flujo completado"
+            details = txt
+            self.show_algorithm_summary('Max Flow', True, summary, details)
         except Exception as e:
             QMessageBox.warning(self, "Error en flujo", str(e))
 
@@ -4037,7 +4309,7 @@ class MainWindow(QMainWindow):
             return
         start_id = next((nid for nid, n in self.canvas.nodes.items() if n.label == start_label), None)
         end_id = next((nid for nid, n in self.canvas.nodes.items() if n.label == end_label), None)
-        if not start_id or not end_id:
+        if start_id is None or end_id is None:
             QMessageBox.warning(self, "Caminos", "No se pudieron resolver los nodos seleccionados.")
             return
         if start_id == end_id:
@@ -4065,7 +4337,7 @@ class MainWindow(QMainWindow):
                 return
             start_id = next((nid for nid, n in self.canvas.nodes.items() if n.label == start_label), None)
             end_id = next((nid for nid, n in self.canvas.nodes.items() if n.label == end_label), None)
-        if not start_id or not end_id or start_id == end_id:
+        if start_id is None or end_id is None or start_id == end_id:
             QMessageBox.information(self, "Dijkstra", "Seleccione nodos válidos y distintos.")
             return
         # Validación de pesos (no negativos para Dijkstra)
@@ -4139,7 +4411,7 @@ class MainWindow(QMainWindow):
                 return
             start_id = next((nid for nid, n in self.canvas.nodes.items() if n.label == start_label), None)
             end_id = next((nid for nid, n in self.canvas.nodes.items() if n.label == end_label), None)
-        if not start_id or not end_id or start_id == end_id:
+        if start_id is None or end_id is None or start_id == end_id:
             QMessageBox.information(self, "Camino más largo (DAG)", "Seleccione nodos válidos y distintos.")
             return
         # Construir grafo dirigido solo con aristas dirigidas
@@ -5016,6 +5288,15 @@ class AnimationController:
         """Start animation"""
         if self.steps:
             self.timer.start(self.speed)
+
+    def pause(self):
+        """Pause animation without resetting current step"""
+        if self.timer.isActive():
+            self.timer.stop()
+
+    def is_running(self) -> bool:
+        """Return whether the animation timer is active"""
+        return self.timer.isActive()
     
     def stop(self):
         """Stop animation"""
