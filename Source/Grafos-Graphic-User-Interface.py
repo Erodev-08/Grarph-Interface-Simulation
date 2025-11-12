@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtWidgets import QInputDialog, QListWidgetItem
 from PyQt5.QtCore import Qt, QPointF, QRectF, QTimer, pyqtSignal, QSettings, QSize
+from PyQt5.QtPrintSupport import QPrinter
 from PyQt5.QtGui import (
     QPainter, QColor, QPen, QBrush, QFont, QIcon, QPalette,
     QMouseEvent, QWheelEvent, QKeyEvent, QPainterPath, QLinearGradient,
@@ -1593,6 +1594,10 @@ class MainWindow(QMainWindow):
         self.allow_multigraph = self.settings.value('allow_multigraph', False, type=bool)
         self.animate_algorithms = self.settings.value('animate_algorithms', True, type=bool)
 
+    # Historiales
+        self.log_history = []  # type: List[str]
+        self.algorithm_history = []  # type: List[Dict[str, str]]
+
         self.init_ui()
         self.apply_theme()
     
@@ -1689,6 +1694,16 @@ class MainWindow(QMainWindow):
         - brief: short one-line summary
         - details: longer text with steps, path or error message
         """
+        # Registrar en historial de algoritmos
+        try:
+            self.algorithm_history.append({
+                'algorithm': name,
+                'success': '1' if success else '0',
+                'summary': brief,
+                'details': details or ''
+            })
+        except Exception:
+            pass
         try:
             if success:
                 msg = QMessageBox(self)
@@ -1777,6 +1792,11 @@ class MainWindow(QMainWindow):
         export_svg_action.triggered.connect(self.export_svg)
         export_menu.addAction(export_svg_action)
 
+        # Export PDF
+        export_pdf_action = QAction("PDF...", self)
+        export_pdf_action.triggered.connect(self.export_pdf)
+        export_menu.addAction(export_pdf_action)
+
         self.file_menu.addSeparator()
         
         preferences_action = QAction("Preferencias...", self)
@@ -1789,6 +1809,14 @@ class MainWindow(QMainWindow):
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
         self.file_menu.addAction(exit_action)
+
+        # Exportaciones adicionales de historial (al final del menú Archivo para fácil acceso)
+        export_results_action = QAction("Exportar Resultados Algoritmos (CSV)", self)
+        export_results_action.triggered.connect(self.export_algorithm_results)
+        self.file_menu.addAction(export_results_action)
+        export_log_action = QAction("Exportar Log", self)
+        export_log_action.triggered.connect(self.export_log)
+        self.file_menu.addAction(export_log_action)
         
         # Edit menu
         edit_menu = menubar.addMenu("Editar")
@@ -1939,6 +1967,19 @@ class MainWindow(QMainWindow):
         matching_action = QAction("Matching Máximo", self)
         matching_action.triggered.connect(self.run_maximum_matching)
         algo_menu.addAction(matching_action)
+        # Nuevos algoritmos agregados
+        euler_action = QAction("Euleriano (Hierholzer)", self)
+        euler_action.triggered.connect(self.run_eulerian)
+        algo_menu.addAction(euler_action)
+        planar_action = QAction("Planaridad", self)
+        planar_action.triggered.connect(self.check_planarity)
+        algo_menu.addAction(planar_action)
+        tree_action = QAction("Validar Árbol", self)
+        tree_action.triggered.connect(self.check_tree)
+        algo_menu.addAction(tree_action)
+        export_results_algo_action = QAction("Exportar resultados (CSV)", self)
+        export_results_algo_action.triggered.connect(self.export_algorithm_results)
+        algo_menu.addAction(export_results_algo_action)
         
         tools_menu = menubar.addMenu("Herramientas")
         
@@ -2141,7 +2182,6 @@ class MainWindow(QMainWindow):
 
         # Theme toggle
         theme_toggle = QAction("🌗 Tema", self)
-        theme_toggle.setShortcut("Ctrl+Shift+D")
         theme_toggle.triggered.connect(self.toggle_theme)
         toolbar.addAction(theme_toggle)
 
@@ -2150,10 +2190,8 @@ class MainWindow(QMainWindow):
         undo_icon = self.style().standardIcon(QStyle.SP_ArrowBack)
         redo_icon = self.style().standardIcon(QStyle.SP_ArrowForward)
         undo_btn = QAction(undo_icon, "Deshacer", self)
-        undo_btn.setShortcut("Ctrl+Z")
         undo_btn.triggered.connect(self.undo)
         redo_btn = QAction(redo_icon, "Rehacer", self)
-        redo_btn.setShortcut("Ctrl+Y")
         redo_btn.triggered.connect(self.redo)
         toolbar.addAction(undo_btn)
         toolbar.addAction(redo_btn)
@@ -2220,7 +2258,6 @@ class MainWindow(QMainWindow):
         view_toolbar.addAction(snap_toggle)
         # Toggle rápido del panel de Log (expandir/ocultar)
         log_toggle = QAction("Log ⌄/⌃", self)
-        log_toggle.setShortcut("F9")
         log_toggle.triggered.connect(self.toggle_log)
         view_toolbar.addSeparator()
         view_toolbar.addAction(log_toggle)
@@ -2273,6 +2310,54 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+F"), self, activated=lambda: self.search_input.setFocus())
         QShortcut(QKeySequence("Ctrl+Shift+L"), self, activated=self.canvas.auto_layout)
         QShortcut(QKeySequence("Ctrl+Shift+C"), self, activated=self.canvas.clear_highlights)
+        # Tutorial y exportaciones
+        QShortcut(QKeySequence("F1"), self, activated=self.show_tutorial)
+        QShortcut(QKeySequence("Ctrl+Shift+R"), self, activated=self.export_algorithm_results)
+        QShortcut(QKeySequence("Ctrl+Alt+L"), self, activated=self.export_log)
+
+    def show_tutorial(self):
+        """Muestra un tutorial rápido con atajos y funciones básicas."""
+        try:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Tutorial rápido")
+            dlg.setModal(True)
+            layout = QVBoxLayout(dlg)
+
+            intro = QLabel(
+                """
+                <h3>Bienvenido a la Interfaz de Grafos</h3>
+                <p>Estos son algunos pasos y atajos útiles para empezar:</p>
+                <ul>
+                  <li><b>Nuevo/Abrir/Guardar</b>: Archivo → Nuevo/Abrir/Guardar</li>
+                  <li><b>Añadir nodo</b>: Ctrl+Shift+N o botón "➕ Nodo" en Acciones rápidas</li>
+                  <li><b>Conectar nodos</b>: Ctrl+Shift+E para entrar al modo conectar y luego clic en dos nodos</li>
+                  <li><b>Auto-layout</b>: Ctrl+Shift+L</li>
+                  <li><b>Limpiar resaltado</b>: Ctrl+Shift+C</li>
+                  <li><b>Zoom</b>: Ctrl++ / Ctrl+- / Ctrl+0</li>
+                  <li><b>Exportar</b>: Archivo → Exportar (PNG, PDF, GraphML, DOT, CSV)</li>
+                  <li><b>Exportar resultados</b>: Ctrl+Shift+R</li>
+                  <li><b>Exportar log</b>: Ctrl+Alt+L</li>
+                  <li><b>Algoritmos</b>: Menú Algoritmos (BFS, DFS, Dijkstra, Flujo, Euleriano, Planaridad, Árbol, etc.)</li>
+                </ul>
+                """
+            )
+            intro.setWordWrap(True)
+            intro.setTextFormat(Qt.RichText)
+            layout.addWidget(intro)
+
+            btns = QHBoxLayout()
+            btn_ok = QPushButton("Cerrar")
+            btn_ok.clicked.connect(dlg.accept)
+            btns.addStretch(1)
+            btns.addWidget(btn_ok)
+            layout.addLayout(btns)
+
+            dlg.resize(560, 420)
+            dlg.exec_()
+            self.log("Se mostró el tutorial rápido")
+        except Exception as e:
+            QMessageBox.information(self, "Tutorial", "Consulta el menú Ayuda o los atajos para comenzar.")
+            self.log(f"Error al mostrar tutorial: {e}")
 
     def add_center_node(self):
         center = self.canvas.screen_to_world(QPointF(self.canvas.width()/2, self.canvas.height()/2))
@@ -2853,6 +2938,52 @@ class MainWindow(QMainWindow):
         """Add message to log"""
         self.log_text.append(message)
         self.statusBar().showMessage(message)
+        try:
+            self.log_history.append(message)
+        except Exception:
+            pass
+
+    # ================= EXPORTACIÓN DE LOG Y RESULTADOS =================
+    def export_log(self):
+        if not self.log_history:
+            QMessageBox.information(self, "Exportar Log", "No hay entradas en el log.")
+            return
+        filename, _ = QFileDialog.getSaveFileName(self, "Exportar Log", "", "Text (*.txt);;CSV (*.csv)")
+        if not filename:
+            return
+        try:
+            if filename.lower().endswith('.csv'):
+                import csv
+                with open(filename, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['linea'])
+                    for line in self.log_history:
+                        writer.writerow([line])
+            else:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    for line in self.log_history:
+                        f.write(line + '\n')
+            self.log(f"Log exportado: {filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"No se pudo exportar log: {e}")
+
+    def export_algorithm_results(self):
+        if not self.algorithm_history:
+            QMessageBox.information(self, "Resultados", "No hay resultados de algoritmos todavía.")
+            return
+        filename, _ = QFileDialog.getSaveFileName(self, "Exportar Resultados Algoritmos", "", "CSV (*.csv)")
+        if not filename:
+            return
+        try:
+            import csv
+            with open(filename, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=['algorithm','success','summary','details'])
+                writer.writeheader()
+                for row in self.algorithm_history:
+                    writer.writerow(row)
+            self.log(f"Resultados exportados: {filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"No se pudo exportar resultados: {e}")
     
     def toggle_log(self):
         """Muestra el panel de Log con la última altura usada o lo oculta completamente."""
@@ -3106,63 +3237,129 @@ class MainWindow(QMainWindow):
             self.save_state()
     
     def open_graph(self):
-        """Open graph from JSON file"""
+        """Importa un grafo desde varios formatos: JSON, GraphML, DOT, CSV (lista o matriz)."""
         filename, _ = QFileDialog.getOpenFileName(
             self,
             "Abrir grafo",
             "",
-            "JSON Files (*.json);;All Files (*)"
+            "Graph Files (*.json *.graphml *.dot *.csv);;All Files (*)"
         )
-        
         if not filename:
             return
-        
+        ext = Path(filename).suffix.lower()
         try:
-            with open(filename, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            # Validate data
-            if 'nodes' not in data or 'edges' not in data:
-                raise ValueError("Formato de archivo inválido")
-            
-            # Clear current graph
             self.canvas.clear_graph()
-            
-            # Load nodes
-            node_labels = []
-            for node_data in data['nodes']:
-                node = NodeData.from_dict(node_data)
-                self.canvas.nodes[node.id] = node
-                node_labels.append(node.label)
-            
-            # Load edges
-            for edge_data in data['edges']:
-                edge = EdgeData.from_dict(edge_data)
-                # Validate nodes exist
-                if edge.source in self.canvas.nodes and edge.target in self.canvas.nodes:
-                    self.canvas.edges[edge.id] = edge
-            
-            # Update node counter based on loaded labels
-            max_node_num = 0
-            for label in node_labels:
-                if label.startswith('N') and label[1:].isdigit():
-                    num = int(label[1:])
-                    if num > max_node_num:
-                        max_node_num = num
-            self.canvas.node_counter = max_node_num
-
-            self.canvas.update()
-            self.save_state()
-            self.log(f"Grafo cargado: {filename}")
+            loaded_labels = []
+            if ext == '.json':
+                with open(filename, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if 'nodes' not in data or 'edges' not in data:
+                    raise ValueError('Formato JSON inválido')
+                for nd in data['nodes']:
+                    node = NodeData.from_dict(nd)
+                    self.canvas.nodes[node.id] = node
+                    loaded_labels.append(node.label)
+                for ed in data['edges']:
+                    edge = EdgeData.from_dict(ed)
+                    if edge.source in self.canvas.nodes and edge.target in self.canvas.nodes:
+                        self.canvas.edges[edge.id] = edge
+            elif ext == '.graphml':
+                if not HAS_NETWORKX:
+                    raise RuntimeError('NetworkX requerido para GraphML')
+                import networkx as nx
+                G = nx.read_graphml(filename)
+                # Usar label si existe; de lo contrario el id original
+                label_map = {}
+                for n, attrs in G.nodes(data=True):
+                    nid = str(uuid.uuid4())
+                    label = attrs.get('label', str(n))
+                    node = NodeData(id=nid, label=label, pos=(len(self.canvas.nodes)*50.0, len(self.canvas.nodes)*30.0))
+                    self.canvas.nodes[nid] = node
+                    label_map[n] = nid
+                    loaded_labels.append(label)
+                for u, v, d in G.edges(data=True):
+                    su = label_map.get(u); tv = label_map.get(v)
+                    if su and tv:
+                        w = float(d.get('weight', 1.0))
+                        self.canvas.add_edge(su, tv, weight=w)
+            elif ext == '.dot':
+                if not HAS_NETWORKX:
+                    raise RuntimeError('NetworkX requerido para DOT')
+                try:
+                    import networkx as nx
+                    from networkx.drawing.nx_pydot import read_dot
+                    G = read_dot(filename)
+                except Exception as e:
+                    raise RuntimeError(f'Error leyendo DOT (pydot requerido): {e}')
+                label_map = {}
+                for n in G.nodes():
+                    nid = str(uuid.uuid4())
+                    label = str(n)
+                    node = NodeData(id=nid, label=label, pos=(len(self.canvas.nodes)*50.0, len(self.canvas.nodes)*30.0))
+                    self.canvas.nodes[nid] = node
+                    label_map[n] = nid
+                    loaded_labels.append(label)
+                for u, v in G.edges():
+                    su = label_map.get(u); tv = label_map.get(v)
+                    if su and tv:
+                        self.canvas.add_edge(su, tv, weight=1.0)
+            elif ext == '.csv':
+                with open(filename, 'r', encoding='utf-8') as f:
+                    lines = [ln.strip() for ln in f.readlines() if ln.strip()]
+                if not lines:
+                    raise ValueError('CSV vacío')
+                header = [h.strip().lower() for h in lines[0].split(',')]
+                if {'source','target'} <= set(header):
+                    # Lista de aristas
+                    def ensure_node(label):
+                        for nid, nd in self.canvas.nodes.items():
+                            if nd.label == label:
+                                return nid
+                        nid = str(uuid.uuid4())
+                        node = NodeData(id=nid, label=label, pos=(len(self.canvas.nodes)*50.0, len(self.canvas.nodes)*30.0))
+                        self.canvas.nodes[nid] = node
+                        loaded_labels.append(label)
+                        return nid
+                    for ln in lines[1:]:
+                        parts = [p.strip() for p in ln.split(',')]
+                        row = dict(zip(header, parts))
+                        su = ensure_node(row['source'])
+                        tv = ensure_node(row['target'])
+                        w = float(row.get('weight', '1') or 1)
+                        self.canvas.add_edge(su, tv, weight=w)
+                else:
+                    # Matriz de adyacencia
+                    matrix = []
+                    for ln in lines:
+                        parts = [p.strip() for p in ln.split(',')]
+                        matrix.append([float(x) for x in parts])
+                    n = len(matrix)
+                    ids = []
+                    for i in range(n):
+                        nid = str(uuid.uuid4())
+                        label = f'N{i+1}'
+                        node = NodeData(id=nid, label=label, pos=(i*65.0, i*35.0))
+                        self.canvas.nodes[nid] = node
+                        ids.append(nid); loaded_labels.append(label)
+                    for i in range(n):
+                        for j in range(n):
+                            w = matrix[i][j]
+                            if w != 0:
+                                self.canvas.add_edge(ids[i], ids[j], weight=w)
+            else:
+                raise ValueError('Formato no soportado')
+            # Actualizar contador autolabel
+            max_num = 0
+            for lb in loaded_labels:
+                if lb.startswith('N') and lb[1:].isdigit():
+                    max_num = max(max_num, int(lb[1:]))
+            self.canvas.node_counter = max_num
+            self.canvas.update(); self.save_state()
+            self.log(f'Grafo importado: {filename}')
             self.current_file_path = filename
             self.add_recent_file(filename)
-        
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"No se pudo cargar el grafo:\n{str(e)}"
-            )
+            QMessageBox.critical(self, 'Error', f'No se pudo importar el grafo:\n{e}')
     
     def save_graph(self):
         """Save graph to JSON file (uses current path if available)"""
@@ -3273,6 +3470,27 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Éxito", "SVG exportado correctamente.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudo exportar SVG:\n{str(e)}")
+    
+    def export_pdf(self):
+        """Exporta el canvas a PDF usando QPrinter."""
+        if not self.canvas.nodes:
+            QMessageBox.warning(self, "Grafo vacío", "No hay nodos para exportar.")
+            return
+        filename, _ = QFileDialog.getSaveFileName(self, "Exportar PDF", "", "PDF Files (*.pdf)")
+        if not filename:
+            return
+        try:
+            printer = QPrinter()
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(filename)
+            printer.setFullPage(True)
+            painter = QPainter(printer)
+            self.canvas.render(painter)
+            painter.end()
+            self.log(f"PDF exportado: {filename}")
+            QMessageBox.information(self, "Éxito", "PDF exportado correctamente.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"No se pudo exportar PDF:\n{e}")
     
     def clear_graph(self):
         """Clear graph"""
@@ -3830,8 +4048,12 @@ class MainWindow(QMainWindow):
             self.show_algorithm_summary('Bellman-Ford', True, summary, details)
         
         except nx.NetworkXNoPath:
-            QMessageBox.warning(self, "Sin camino", 
-                              f"No existe un camino entre {start_label} y {end_label}.")
+            QMessageBox.warning(self, "Sin camino", f"No existe un camino entre {start_label} y {end_label}.")
+        except nx.NetworkXUnbounded:
+            QMessageBox.critical(self, "Ciclo negativo", "Se detectó un ciclo de peso negativo que hace ilimitadas las distancias.")
+            self.log("Bellman-Ford: ciclo negativo detectado")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Falló Bellman-Ford: {e}")
     
     def run_floyd_warshall(self):
         """Run Floyd-Warshall algorithm"""
@@ -3851,6 +4073,12 @@ class MainWindow(QMainWindow):
             G.add_edge(edge.source, edge.target, weight=edge.weight)
         
         distances = dict(nx.floyd_warshall(G, weight='weight'))
+        # Detección de ciclos negativos: distancia(v,v) < 0
+        negatives = [nid for nid in G.nodes() if distances[nid][nid] < 0]
+        if negatives:
+            labels = [self.canvas.nodes[n].label for n in negatives]
+            QMessageBox.critical(self, "Ciclos negativos", f"Se detectaron ciclos negativos en nodos: {', '.join(labels)}")
+            self.log("Floyd-Warshall: ciclos negativos detectados")
         
         # Show results in a dialog
         dialog = QDialog(self)
@@ -4286,6 +4514,96 @@ class MainWindow(QMainWindow):
                     edge_ids.append(eid); break
         self.canvas.highlight_edges(edge_ids)
         self.log(f"Matching máximo (bipartito): {len(edge_ids)} aristas")
+
+    def run_eulerian(self):
+        """Detecta circuito o camino euleriano (Hierholzer vía NetworkX)."""
+        if not HAS_NETWORKX:
+            QMessageBox.information(self, "NetworkX requerido", "Instale NetworkX para cálculo euleriano.")
+            return
+        directed = any(e.directed for e in self.canvas.edges.values())
+        G = nx.DiGraph() if directed else nx.Graph()
+        for nid in self.canvas.nodes:
+            G.add_node(nid)
+        for e in self.canvas.edges.values():
+            G.add_edge(e.source, e.target)
+        try:
+            if directed:
+                if nx.is_eulerian(G):
+                    seq = list(nx.eulerian_circuit(G))
+                elif nx.is_semieulerian(G):
+                    seq = list(nx.eulerian_path(G))
+                else:
+                    QMessageBox.information(self, "No Euleriano", "El grafo dirigido no es (semi)euleriano.")
+                    return
+                ids = []
+                for u, v in seq:
+                    for eid, ed in self.canvas.edges.items():
+                        if ed.source == u and ed.target == v:
+                            ids.append(eid); break
+                self.canvas.highlight_edges(ids)
+                self.log(f"Euleriano (dirigido): {len(ids)} aristas")
+            else:
+                if nx.is_eulerian(G):
+                    seq = list(nx.eulerian_circuit(G))
+                elif nx.is_semieulerian(G):
+                    seq = list(nx.eulerian_path(G))
+                else:
+                    QMessageBox.information(self, "No Euleriano", "El grafo no es (semi)euleriano.")
+                    return
+                ids = []
+                for u, v in seq:
+                    for eid, ed in self.canvas.edges.items():
+                        if {ed.source, ed.target} == {u, v}:
+                            ids.append(eid); break
+                self.canvas.highlight_edges(ids)
+                self.log(f"Euleriano: {len(ids)} aristas")
+        except Exception as e:
+            QMessageBox.warning(self, "Error Euleriano", str(e))
+
+    def check_planarity(self):
+        """Verifica si el grafo es planar (usa networkx.check_planarity)."""
+        if not HAS_NETWORKX:
+            QMessageBox.information(self, "NetworkX requerido", "Instale NetworkX para verificar planaridad.")
+            return
+        G = nx.Graph()
+        for nid in self.canvas.nodes:
+            G.add_node(nid)
+        for e in self.canvas.edges.values():
+            G.add_edge(e.source, e.target)
+        try:
+            planar, _ = nx.check_planarity(G)
+            if planar:
+                QMessageBox.information(self, "Planaridad", "El grafo es planar.")
+                self.log("Planaridad: Sí")
+            else:
+                QMessageBox.information(self, "Planaridad", "El grafo NO es planar.")
+                self.log("Planaridad: No")
+        except Exception as e:
+            QMessageBox.warning(self, "Error Planaridad", str(e))
+
+    def check_tree(self):
+        """Valida si el grafo actual (ignora dirección) es un árbol."""
+        if not HAS_NETWORKX:
+            QMessageBox.information(self, "NetworkX requerido", "Instale NetworkX para validar árbol.")
+            return
+        if not self.canvas.nodes:
+            QMessageBox.information(self, "Árbol", "Grafo vacío.")
+            return
+        G = nx.Graph()
+        for nid in self.canvas.nodes:
+            G.add_node(nid)
+        for e in self.canvas.edges.values():
+            G.add_edge(e.source, e.target)
+        try:
+            ok = nx.is_tree(G)
+            if ok:
+                QMessageBox.information(self, "Árbol", "El grafo es un árbol.")
+                self.log("Árbol: Sí")
+            else:
+                QMessageBox.information(self, "Árbol", "El grafo NO es un árbol.")
+                self.log("Árbol: No")
+        except Exception as e:
+            QMessageBox.warning(self, "Error Árbol", str(e))
 
     def run_paths_dialog(self):
         """Diálogo para calcular caminos: más corto (Dijkstra) o más largo (DAG)."""
